@@ -10,6 +10,7 @@ import (
 	"yourproject/internal/db"
 	"yourproject/internal/git"
 	"yourproject/internal/logger"
+	"yourproject/internal/secrets"
 	"yourproject/internal/services"
 	"yourproject/internal/vault"
 	"yourproject/internal/scan"
@@ -25,7 +26,7 @@ var (
 )
 
 func main() {
-	// Inicializa o logger.
+	// Inicializa o logger (singleton).
 	if err := logger.Init(); err != nil {
 		logger.Log.Fatalf("Erro fatal ao iniciar o logger: %v", err)
 	}
@@ -34,11 +35,30 @@ func main() {
 	start := time.Now()
 	logger.Trace("main", start)
 
-	// Carrega configurações.
+	// Carrega as configurações.
 	cfg := config.Load()
 	if cfg.GitleaksPath == "" {
 		cfg.GitleaksPath = "/usr/local/bin/gitleaks"
 	}
+
+	// Recupera a senha do banco do AWS Secrets Manager.
+	var dbPassword string
+	if cfg.EnableSecrets {
+		secretFetcher, err := secrets.NewAWSSecretFetcher(cfg.AWSRegion)
+		if err != nil {
+			logger.Log.Fatalf("Erro fatal ao criar AWSSecretFetcher: %v", err)
+		}
+		secret, err := secretFetcher.GetSecret(cfg.DBSecretID)
+		if err != nil {
+			logger.Log.Fatalf("Erro fatal ao recuperar o secret do DB: %v", err)
+		}
+		dbPassword = secret
+	} else {
+		dbPassword = os.Getenv("PG_PASSWORD")
+	}
+
+	// Atualiza a configuração com a senha recuperada.
+	cfg.PGPassword = dbPassword
 
 	// Conecta ao banco RDS.
 	dbConn, err := sql.Open("postgres", cfg.PostgresConnString())
@@ -48,7 +68,7 @@ func main() {
 	defer dbConn.Close()
 	store := &db.RDSStore{DB: dbConn}
 
-	// Instancia o VaultClient. Se o Vault estiver desabilitado, use NoOp.
+	// Instancia o VaultClient.
 	var vaultClient vault.VaultClient
 	if cfg.EnableVault {
 		vaultClient = &vault.DefaultVaultClient{}
@@ -56,10 +76,10 @@ func main() {
 		vaultClient = &vault.NoOpVaultClient{}
 	}
 
-	// Instancia o GitClient usando go-git.
+	// Instancia o GitClient.
 	gitClient := &git.GoGitClient{Vault: vaultClient}
 
-	// Instancia o Scanner (Gitleaks) com o caminho configurado.
+	// Instancia o Scanner.
 	scanner := &scan.GitleaksScanner{GitleaksPath: cfg.GitleaksPath}
 
 	// Configura AWS e cria o cliente SQS.
@@ -75,7 +95,7 @@ func main() {
 		QueueURL: cfg.SQSQueueURL,
 	}
 
-	// Inicia o producer que lê a SQS e produz jobs.
+	// Inicia o producer que lê da SQS e produz jobs.
 	jobChan := producer.Start()
 
 	// Inicia o consumer que processa os jobs.

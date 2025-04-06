@@ -11,7 +11,6 @@ import (
 	"yourproject/internal/logger"
 )
 
-// RDSStore implementa DataStore usando um banco PostgreSQL (RDS).
 type RDSStore struct {
 	DB *sql.DB
 }

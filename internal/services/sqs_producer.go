@@ -11,12 +11,10 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 )
 
-// SQSProducer define a interface para o producer.
 type SQSProducer interface {
 	Start() <-chan *models.ScanJob
 }
 
-// DefaultSQSProducer é a implementação padrão.
 type DefaultSQSProducer struct {
 	Client   *sqs.Client
 	QueueURL string

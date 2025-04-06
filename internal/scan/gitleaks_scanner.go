@@ -11,7 +11,6 @@ import (
 	"yourproject/internal/logger"
 )
 
-// GitleaksScanner implementa Scanner usando o binário do Gitleaks.
 type GitleaksScanner struct {
 	GitleaksPath string
 }

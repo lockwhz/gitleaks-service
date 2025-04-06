@@ -8,7 +8,10 @@ import (
 	"yourproject/internal/logger"
 )
 
-// DefaultJobConsumer implementa um consumer que processa os jobs.
+type JobConsumer interface {
+	Start(jobChan <-chan *models.ScanJob, dbConn *sql.DB, gitClient GitClient, scanner Scanner, cloneMaxConc, numWorkers int)
+}
+
 type DefaultJobConsumer struct{}
 
 func (c *DefaultJobConsumer) Start(jobChan <-chan *models.ScanJob, dbConn *sql.DB, gitClient GitClient, scanner Scanner, cloneMaxConc, numWorkers int) {

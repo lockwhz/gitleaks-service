@@ -5,7 +5,6 @@ import (
 	"os"
 )
 
-// VaultClient define a interface para recuperar credenciais do GitHub.
 type VaultClient interface {
 	GetGitHubCredentials() (*GitHubCredentials, error)
 }
@@ -15,7 +14,6 @@ type GitHubCredentials struct {
 	Token    string
 }
 
-// DefaultVaultClient recupera as credenciais do Vault (simulado via variáveis de ambiente).
 type DefaultVaultClient struct{}
 
 func (v *DefaultVaultClient) GetGitHubCredentials() (*GitHubCredentials, error) {
@@ -30,7 +28,6 @@ func (v *DefaultVaultClient) GetGitHubCredentials() (*GitHubCredentials, error) 
 	}, nil
 }
 
-// NoOpVaultClient retorna credenciais padrão para testes.
 type NoOpVaultClient struct{}
 
 func (v *NoOpVaultClient) GetGitHubCredentials() (*GitHubCredentials, error) {

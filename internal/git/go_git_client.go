@@ -12,7 +12,6 @@ import (
 	"yourproject/internal/vault"
 )
 
-// GoGitClient implementa GitClient usando go-git.
 type GoGitClient struct {
 	Vault vault.VaultClient
 }
