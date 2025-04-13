@@ -20,9 +20,15 @@ import (
 	awsSQS "github.com/aws/aws-sdk-go-v2/service/sqs"
 )
 
+
+
 var (
 	cloneMaxConc = 3 // Limite de clones simultâneos.
 	numWorkers   = 5 // Número de workers no consumer.
+	github_access_token_test = "sk-test_9f4d3b8a7c1e4f2092a9c8e12f6b7d5a"
+	pk = "pk_live_eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhY2NvdW50IjoiYXBpLXVzZXIxMjMiLCJzY29wZSI6InJlYWQifQ.4Dfkm0v7tUxuHZ9cpjblYv9O95OAD9LPCYiAjyS-Y1M"
+	AWS_ACCESS_KEY_ID="AKIAIOSFODNN7EXAMPLE"
+	AWS_SECRET_ACCESS_KEY="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
 )
 
 func main() {
