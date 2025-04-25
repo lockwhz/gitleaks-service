@@ -25,7 +25,7 @@ type RepoScanResult struct {
 
 func main() {
 	repoURL := "https://github.com/lockwhz/gitleaks-service.git"
-	accessToken := "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"
+	accessToken := ""
 
 	result, err := scanRepo(repoURL, accessToken)
 	if err != nil {
