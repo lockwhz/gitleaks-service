@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -43,7 +44,10 @@ func scanRepo(repoURL, accessToken string) (*RepoScanResult, error) {
 	baseCloneDir := filepath.Join("./repos")
 	os.MkdirAll(baseCloneDir, 0755)
 
-	branches := []string{"main", "develop", "feature/test"}
+	branches, err := listRemoteBranches(repoURL)
+	if err != nil {
+		return nil, fmt.Errorf("erro ao listar branches remotas: %v", err)
+	}
 
 	var results []BranchScanResult
 
@@ -54,7 +58,7 @@ func scanRepo(repoURL, accessToken string) (*RepoScanResult, error) {
 
 		cloneURL := strings.Replace(repoURL, "https://", fmt.Sprintf("https://x-access-token:%s@", accessToken), 1)
 
-		cmd := exec.Command("git", "clone", "--branch", branch, "--no-single-branch", cloneURL, branchPath)
+		cmd := exec.Command("git", "clone", "--branch", branch, cloneURL, branchPath)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		err := cmd.Run()
@@ -83,8 +87,40 @@ func scanRepo(repoURL, accessToken string) (*RepoScanResult, error) {
 	}, nil
 }
 
+func listRemoteBranches(repoURL string) ([]string, error) {
+	cmd := exec.Command("git", "ls-remote", "--heads", repoURL)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = os.Stderr
+
+	err := cmd.Run()
+	if err != nil {
+		return nil, fmt.Errorf("falha ao executar git ls-remote: %v", err)
+	}
+
+	var branches []string
+	scanner := bufio.NewScanner(&out)
+	for scanner.Scan() {
+		line := scanner.Text()
+		parts := strings.Split(line, "\t")
+		if len(parts) != 2 {
+			continue
+		}
+		ref := parts[1]
+		if strings.HasPrefix(ref, "refs/heads/") {
+			branch := strings.TrimPrefix(ref, "refs/heads/")
+			branches = append(branches, branch)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("erro ao ler a saída do ls-remote: %v", err)
+	}
+
+	return branches, nil
+}
+
 func runGitleaks(repoPath, branchName string) BranchScanResult {
-	gitleaksPath := "repos/gitleaks"
+	gitleaksPath := "./gitleaks"
 
 	info, err := os.Stat(gitleaksPath)
 	if err != nil || info.Mode()&0111 == 0 {
