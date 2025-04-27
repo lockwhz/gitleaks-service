@@ -1,11 +1,10 @@
-package main
+package git
 
 import (
 	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,23 +23,28 @@ type RepoScanResult struct {
 	Results    []BranchScanResult `json:"results"`
 }
 
-func main() {
-	repoURL := "https://github.com/lockwhz/gitleaks-service.git"
-	accessToken := ""
-
-	result, err := scanRepo(repoURL, accessToken)
-	if err != nil {
-		log.Fatalf("Falha no scan: %v", err)
-	}
-
-	jsonOutput, err := json.MarshalIndent(result, "", "  ")
-	if err != nil {
-		log.Fatalf("Erro ao gerar JSON: %v", err)
-	}
-	fmt.Println(string(jsonOutput))
+type Finding struct {
+	Description string  `json:"Description"`
+	StartLine   int     `json:"StartLine"`
+	EndLine     int     `json:"EndLine"`
+	StartColumn int     `json:"StartColumn"`
+	EndColumn   int     `json:"EndColumn"`
+	Match       string  `json:"Match"`
+	Secret      string  `json:"Secret"`
+	File        string  `json:"File"`
+	Commit      string  `json:"Commit"`
+	Entropy     float64 `json:"Entropy"`
+	Author      string  `json:"Author"`
+	Email       string  `json:"Email"`
+	Date        string  `json:"Date"`
+	Message     string  `json:"Message"`
+	Fingerprint string  `json:"Fingerprint"`
+	RuleID      string  `json:"RuleID"`
+	LeakURL     string  `json:"LeakURL"`
 }
 
-func scanRepo(repoURL, accessToken string) (*RepoScanResult, error) {
+// Função pública para ser chamada no main
+func ScanRepo(repoURL, accessToken string) (*RepoScanResult, error) {
 	baseCloneDir := filepath.Join("./repos")
 	os.MkdirAll(baseCloneDir, 0755)
 
@@ -120,7 +124,7 @@ func listRemoteBranches(repoURL string) ([]string, error) {
 }
 
 func runGitleaks(repoPath, branchName string) BranchScanResult {
-	gitleaksPath := "./gitleaks"
+	gitleaksPath := "repos/gitleaks"
 
 	info, err := os.Stat(gitleaksPath)
 	if err != nil || info.Mode()&0111 == 0 {
@@ -175,29 +179,22 @@ func runGitleaks(repoPath, branchName string) BranchScanResult {
 		return result
 	}
 
-	var findings []map[string]interface{}
+	var findings []Finding
 	if err := json.Unmarshal(reportContent, &findings); err != nil {
 		result.Success = false
 		result.Error = fmt.Sprintf("❌ Erro ao decodificar JSON da saída do Gitleaks: %v\nSaída: %s", err, string(reportContent))
 		return result
 	}
 
+	for _, finding := range findings {
+		// Aqui você pode fazer algo (ex: salvar no banco)
+		fmt.Printf("\n\033[1mFinding:\033[0m %+v\n", finding)
+	}
+
+	// Convertendo para []interface{} pra manter compatibilidade
 	result.Findings = make([]interface{}, len(findings))
 	for i, f := range findings {
 		result.Findings[i] = f
-		fmt.Println("\n\033[1mFinding Detalhado:\033[0m")
-		fmt.Printf("Line:        %v\n", f["Line"])
-		fmt.Printf("Secret:      \033[38;5;208m%v\033[0m\n", f["Secret"])
-		fmt.Printf("RuleID:      %v\n", f["RuleID"])
-		fmt.Printf("Entropy:     %v\n", f["Entropy"])
-		fmt.Printf("File:        %v\n", f["File"])
-		fmt.Printf("Line:        %v\n", f["StartLine"])
-		fmt.Printf("Commit:      %v\n", f["Commit"])
-		fmt.Printf("Author:      %v\n", f["Author"])
-		fmt.Printf("Email:       %v\n", f["Email"])
-		fmt.Printf("Date:        %v\n", f["Date"])
-		fmt.Printf("Fingerprint: %v\n", f["Fingerprint"])
-		fmt.Printf("Link:        %v\n", f["Link"])
 	}
 
 	return result
