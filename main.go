@@ -1,117 +1,70 @@
 package main
 
 import (
-	"context"
-	"database/sql"
-	"sync"
-	"time"
+    "context"
+    "encoding/json"
+    "fmt"
+    "log"
+    "os"
 
-	"yourproject/config"
-	"yourproject/internal/db"
-	"yourproject/internal/git"
-	"yourproject/internal/logger"
-	"yourproject/internal/secrets"
-	"yourproject/internal/services"
-	"yourproject/internal/vault"
-	"yourproject/internal/scan"
-	_ "github.com/lib/pq"
+    gitclient "github.com/itau-corp/itau-uq3-app-clone-scan-service/internal/git"
+    "github.com/itau-corp/itau-uq3-app-clone-scan-service/internal/logger"
+    "github.com/itau-corp/itau-uq3-app-clone-scan-service/internal/services"
 
-	"github.com/aws/aws-sdk-go-v2/config"
-	awsSQS "github.com/aws/aws-sdk-go-v2/service/sqs"
+    "github.com/google/uuid"
 )
 
-
-
-var (
-	cloneMaxConc = 3 // Limite de clones simultâneos.
-	numWorkers   = 5 // Número de workers no consumer.
-	github_access_token_test = "sk-test_9f4d3b8a7c1e4f2092a9c8e12f6b7d5a"
-	pk = "pk_live_eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhY2NvdW50IjoiYXBpLXVzZXIxMjMiLCJzY29wZSI6InJlYWQifQ.4Dfkm0v7tUxuHZ9cpjblYv9O95OAD9LPCYiAjyS-Y1M"
-	META_AI_ACCESS_KEY_ID="AKIAIOSFODNN7EXAMPLE"
-	META_AI_SECRET_ACCESS_KEY="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
-)
+// exemplo fictício de Job utilizado na mensagem SQS
+// substitua pelos campos reais
+// type Job struct { ScanID string; RepositoryFullName string }
 
 func main() {
-	// Inicializa o logger (singleton).
-	if err := logger.Init(); err != nil {
-		logger.Log.Fatalf("Erro fatal ao iniciar o logger: %v", err)
-	}
-	defer logger.Log.Sync()
+    /* ─────────────────────────── 1. logging ─────────────────────────── */
+    logger.InitLogger()
+    slog := logger.GetSugaredLogger()
 
-	start := time.Now()
-	logger.Trace("main", start)
+    /* ─────────────────────────── 2. obter mensagem SQS ──────────────── */
+    // Aqui deve entrar o código que consome a fila e preenche a struct Job.
+    // Para fins de exemplo, uso valores mockados:
+    job := struct {
+        ScanID             string
+        RepositoryFullName string
+    }{
+        ScanID:             uuid.NewString(),
+        RepositoryFullName: "org/repo",
+    }
 
-	// Carrega as configurações.
-	cfg := config.Load()
-	if cfg.GitleaksPath == "" {
-		cfg.GitleaksPath = "/usr/local/bin/gitleaks"
-	}
+    repoURL := fmt.Sprintf("https://github.com/%s.git", job.RepositoryFullName)
 
-	// Recupera a senha do banco do AWS Secrets Manager.
-	var dbPassword string
-	if cfg.EnableSecrets {
-		secretFetcher, err := secrets.NewAWSSecretFetcher(cfg.AWSRegion)
-		if err != nil {
-			logger.Log.Fatalf("Erro fatal ao criar AWSSecretFetcher: %v", err)
-		}
-		secret, err := secretFetcher.GetSecret(cfg.DBSecretID)
-		if err != nil {
-			logger.Log.Fatalf("Erro fatal ao recuperar o secret do DB: %v", err)
-		}
-		dbPassword = secret
-	} else {
-		dbPassword = os.Getenv("PG_PASSWORD")
-	}
+    /* ─────────────────────────── 3. executa scan Git/Gitleaks ───────── */
+    accessToken := os.Getenv("GITHUB_TOKEN") // opcional
+    result, err := gitclient.ScanRepo(repoURL, accessToken)
+    if err != nil {
+        slog.Fatalf("scan repo: %v", err)
+    }
 
-	// Atualiza a configuração com a senha recuperada.
-	cfg.PGPassword = dbPassword
+    /* ─────────────────────────── 4. persiste resultados ─────────────── */
+    dbSvc := services.NewDatabase()
+    if _, err := dbSvc.Connect(
+        os.Getenv("DB_HOST"),
+        os.Getenv("DB_PORT"),
+        os.Getenv("DB_NAME"),
+        os.Getenv("DB_USER"),
+        os.Getenv("DB_PASS"),
+    ); err != nil {
+        slog.Fatalf("connect db: %v", err)
+    }
+    defer dbSvc.Close()
 
-	// Conecta ao banco RDS.
-	dbConn, err := sql.Open("postgres", cfg.PostgresConnString())
-	if err != nil {
-		logger.Log.Fatalf("Erro fatal ao conectar ao banco: %v", err)
-	}
-	defer dbConn.Close()
-	store := &db.RDSStore{DB: dbConn}
+    scanID := uuid.MustParse(job.ScanID)
+    repoID := uuid.New() // ou obtenha de tabela de repositórios
 
-	// Instancia o VaultClient.
-	var vaultClient vault.VaultClient
-	if cfg.EnableVault {
-		vaultClient = &vault.DefaultVaultClient{}
-	} else {
-		vaultClient = &vault.NoOpVaultClient{}
-	}
+    if err := dbSvc.SaveFindings(context.Background(), scanID, repoID, result.Results); err != nil {
+        slog.Fatalf("save findings: %v", err)
+    }
 
-	// Instancia o GitClient.
-	gitClient := &git.GoGitClient{Vault: vaultClient}
-
-	// Instancia o Scanner.
-	scanner := &scan.GitleaksScanner{GitleaksPath: cfg.GitleaksPath}
-
-	// Configura AWS e cria o cliente SQS.
-	awsCfg, err := config.LoadDefaultConfig(context.Background())
-	if err != nil {
-		logger.Log.Fatalf("Erro fatal ao carregar configurações AWS: %v", err)
-	}
-	sqsClient := awsSQS.NewFromConfig(awsCfg)
-
-	// Instancia o SQSProducer.
-	producer := &services.DefaultSQSProducer{
-		Client:   sqsClient,
-		QueueURL: cfg.SQSQueueURL,
-	}
-
-	// Inicia o producer que lê da SQS e produz jobs.
-	jobChan := producer.Start()
-
-	// Inicia o consumer que processa os jobs.
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		consumer := &services.DefaultJobConsumer{}
-		consumer.Start(jobChan, dbConn, gitClient, scanner, cloneMaxConc, numWorkers)
-	}()
-
-	wg.Wait()
+    /* ─────────────────────────── 5. log/retorno opcional ────────────── */
+    if pretty, err := json.MarshalIndent(result, "", "  "); err == nil {
+        log.Println(string(pretty))
+    }
 }

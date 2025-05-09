@@ -1,64 +1,84 @@
-package services
+package main
 
 import (
-	"context"
-	"encoding/json"
-	"time"
+    "context"
+    "log"
+    "os"
+    "os/signal"
+    "syscall"
 
-	"yourproject/models"
-	"yourproject/internal/logger"
+    gitclient "github.com/itau-corp/itau-uq3-app-clone-scan-service/internal/git"
+    "github.com/itau-corp/itau-uq3-app-clone-scan-service/internal/logger"
+    "github.com/itau-corp/itau-uq3-app-clone-scan-service/internal/queue"
+    "github.com/itau-corp/itau-uq3-app-clone-scan-service/internal/services"
 
-	"github.com/aws/aws-sdk-go-v2/service/sqs"
+    "github.com/google/uuid"
 )
 
-type SQSProducer interface {
-	Start() <-chan *models.ScanJob
-}
+func main() {
+    /* ────────── 1. logger & ctx com cancel em SIGTERM ────────── */
+    logger.InitLogger()
+    slog := logger.GetSugaredLogger()
 
-type DefaultSQSProducer struct {
-	Client   *sqs.Client
-	QueueURL string
-}
+    ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+    defer stop()
 
-func (p *DefaultSQSProducer) Start() <-chan *models.ScanJob {
-	jobChan := make(chan *models.ScanJob, 10)
-	go func() {
-		ctx := context.Background()
-		for {
-			resp, err := p.Client.ReceiveMessage(ctx, &sqs.ReceiveMessageInput{
-				QueueUrl:            &p.QueueURL,
-				MaxNumberOfMessages: 1,
-				WaitTimeSeconds:     10,
-			})
-			if err != nil {
-				logger.Log.Errorf("Erro ao receber mensagem da SQS: %v", err)
-				time.Sleep(5 * time.Second)
-				continue
-			}
-			if len(resp.Messages) == 0 {
-				continue
-			}
-			msg := resp.Messages[0]
-			var job models.ScanJob
-			if err := json.Unmarshal([]byte(*msg.Body), &job); err != nil {
-				logger.Log.Errorf("Erro ao parsear JSON da mensagem: %v", err)
-				deleteMessage(ctx, p.Client, p.QueueURL, msg.ReceiptHandle)
-				continue
-			}
-			deleteMessage(ctx, p.Client, p.QueueURL, msg.ReceiptHandle)
-			logger.Log.Debugf("Producer: job %s para o repositório %s recebido", job.ScanID, job.RepositoryFullName)
-			jobChan <- &job
-		}
-	}()
-	return jobChan
-}
+    /* ────────── 2. SQS consumer ────────── */
+    queueURL := os.Getenv("SQS_URL")
+    region := os.Getenv("AWS_REGION")
+    consumer, err := queue.NewConsumer(ctx, queueURL, region)
+    if err != nil {
+        slog.Fatalf("sqs consumer: %v", err)
+    }
 
-func deleteMessage(ctx context.Context, client *sqs.Client, queueURL string, receiptHandle *string) {
-	_, err := client.DeleteMessage(ctx, &sqs.DeleteMessageInput{
-		QueueUrl:      &queueURL,
-		ReceiptHandle: receiptHandle,
-	})
-	if err != nil {
-		logger.Log.Errorf("Erro ao deletar mensagem da SQS: %v", err)
-	}
+    /* ────────── 3. DB connection (reutilizada por todos os jobs) ────────── */
+    dbSvc := services.NewDatabase()
+    if _, err := dbSvc.Connect(
+        os.Getenv("DB_HOST"),
+        os.Getenv("DB_PORT"),
+        os.Getenv("DB_NAME"),
+        os.Getenv("DB_USER"),
+        os.Getenv("DB_PASS"),
+    ); err != nil {
+        slog.Fatalf("db connect: %v", err)
+    }
+    defer dbSvc.Close()
+
+    accessToken := os.Getenv("GITHUB_TOKEN") // opcional
+
+    /* ────────── 4. Loop de processamento ────────── */
+    if err := consumer.RunLoop(ctx, func(ctx context.Context, job queue.Job) error {
+        scanID, err := uuid.Parse(job.ScanID)
+        if err != nil {
+            slog.Errorf("scanID inválido: %v", err)
+            return err
+        }
+        repoID, err := uuid.Parse(job.RepoID)
+        if err != nil {
+            slog.Errorf("repoID inválido: %v", err)
+            return err
+        }
+
+        slog.Infof("processando repo %s (scan %s)", job.RepoURL, scanID)
+
+        // 1) clone + scan
+        result, err := gitclient.ScanRepo(job.RepoURL, accessToken)
+        if err != nil {
+            slog.Errorf("scan repo: %v", err)
+            return err
+        }
+
+        // 2) persistir findings
+        if err := dbSvc.SaveFindings(ctx, scanID, repoID, result.Results); err != nil {
+            slog.Errorf("save findings: %v", err)
+            return err
+        }
+
+        slog.Infof("OK – %d branches, %d leaks únicos", len(result.Results), len(resultscan.FlattenFindings(result.Results)))
+        return nil
+    }); err != nil {
+        slog.Fatalf("run loop: %v", err)
+    }
+
+    slog.Info("encerrado com sucesso")
 }
